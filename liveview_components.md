@@ -36,7 +36,7 @@ Defined by using Phoenix.LiveComponent
 Called by Phoenix.LiveView.live_component/3
 
 ---
-## Simplest Component
+## Simplest LiveComponent
 
 ```elixir
 defmodule ClassComponent do
@@ -57,9 +57,12 @@ Define render/1
 ## Invoke Component - Stateless
 
 ```elixir
-<%= live_component @socket, ClassComponent, button_state_style: @class1_state, button_text: @class1_text, button_val=@class1_text %>
-<%= live_component @socket, ClassComponent, button_state_style: @class1_state, button_text: @class1_text, button_val=@class1_text %>
-<%= live_component @socket, ClassComponent, button_state_style: @class1_state, button_text: @class1_text, button_val=@class1_text %>```
+<%= live_component @socket, ClassComponent, button_state_style: @class1_state,
+ button_text: @class1_text, button_val=@class1_text %>
+<%= live_component @socket, ClassComponent, button_state_style: @class1_state,
+ button_text: @class1_text, button_val=@class1_text %>
+<%= live_component @socket, ClassComponent, button_state_style: @class1_state,
+ button_text: @class1_text, button_val=@class1_text %>
 ```
 ---
 ## Stateless Lifecycle
@@ -73,7 +76,8 @@ A stateless component is always mounted, updated, and rendered whenever the pare
 ## Stateful Component Invoke
 
 ```elixir
-<%= live_component @socket, ClassComponent, id: @class.id, button_state_style: @class_state, button_text: @class_text, button_val=@class_text %>
+<%= live_component @socket, ClassComponent, id: @class.id, button_state_style: 
+@class_state, button_text: @class_text, button_val=@class_text %>
 ```
 
 Add an id field
@@ -91,7 +95,9 @@ defmodule UserComponent do
 
   def render(assigns) do
     ~L"""
-    <button id="class-<%= @id %>" class="<%= @button_state_style %>" phx-click="btnclk" phx-target="#class-1" phx-value-btnclk="<%= @button_val %>">
+    <button id="class-<%= @id %>" class="<%= @button_state_style %>" 
+    phx-click="btnclk" phx-target="#class-1" phx-value-btnclk=
+    "<%= @button_val %>">
         <%= @button_text %>
     </button>
     """
@@ -101,78 +107,118 @@ end
 
 For a client event to reach a component, the tag must be annotated with a phx-target annotation which must be a query selector to an element inside the component.
 ---
-## https://phoenixphrenzy.com/results
+## Update
 
----
-## Page Load
-<img src="./images/page_load.png"  height="450">
-
----
-## Messages Over Socket
-<img src="./images/messages_over_socket.png" height="450">
-
----
-## .leex
-<img src="./images/leex_example.png"  height="500">
-
----
-## Bindings
-
-```html
-<button phx-click="inc_temperature">+</button>
-```
----
-## Binding Handler
-
-All via handle_event callback
+Every time a stateful component is rendered, both preload/1 and update/2 are called.
 
 ```elixir
-def handle_event("inc_temperature", _value, socket) do
-  {:ok, new_temp} = Thermostat.inc_temperature(socket.assigns.id)
-  {:noreply, assign(socket, :temperature, new_temp)}
+def update(assigns, socket) do
+  user = Repo.get! User, assigns.id
+  {:ok, assign(socket, :user, user)}
+end
+```
+
+rendering multiple user components in the same page via update, 
+you have a N+1 query problem
+---
+## Preload
+
+invoked with a list of assigns for all components of the same type
+
+```elixir
+def preload(list_of_assigns) do
+  list_of_ids = Enum.map(list_of_assigns, & &1.id)
+
+  users =
+    from(u in User, where: u.id in ^list_of_ids, select: {u.id, u})
+    |> Repo.all()
+    |> Map.new()
+
+  Enum.map(list_of_assigns, fn assigns ->
+    Map.put(assigns, :user, users[assigns.id])
+  end)
+end
+```
+
+return an updated list_of_assigns, keeping the assigns in the same order as they were given
+---
+## Liveview Source of Truth
+
+LiveView will be responsible for fetching all of the cards in a board
+
+```elixir
+<%= for card <- @cards do %>
+  <%= live_component CardComponent, card: card, board_id: @id %>
+<% end %>
+```
+
+---
+## LiveComponent handle_event
+
+Pass event on to parent Liveview
+
+```elixir
+defmodule CardComponent do
+  ...
+  def handle_event("update_title", %{"title" => title}, socket) do
+    send self(), {:updated_card, %{socket.assigns.card | title: title}}
+    {:noreply, socket}
+  end
 end
 ```
 ---
-## Binding:Attribute
+## Liveview handle_info
 
-| Binding  | Attribute |
-| ------------- | ------------- |
-|Params	|phx-value-*|
-|Click Events	|phx-click|
-|Focus/Blur Events	|phx-blur, phx-focus, phx-target|
-|Form Events	|phx-change, phx-submit, data-phx-error-for, phx-disable-with|
+```elixir
+defmodule BoardView do
+  ...
+  def handle_info({:updated_card, card}, socket) do
+    # update the list of cards in the socket
+    {:noreply, updated_socket}
+  end
+end
+```
+---
+## PubSub to parent Liveview
+
+```
+defmodule CardComponent do
+  ...
+  def handle_event("update_title", %{"title" => title}, socket) do
+    message = {:updated_card, %{socket.assigns.card | title: title}}
+    Phoenix.PubSub.broadcast(MyApp.PubSub, board_topic(socket), message)
+    {:noreply, socket}
+  end
+
+  defp board_topic(socket) do
+    "board:" <> socket.assigns.board_id
+  end
+end
+```
+
+Distributed updates out of the box
+---
+## LiveComponent source of truth
+
+```elixir
+<%= for card_id <- @card_ids do %>
+  <%= live_component CardComponent, card_id: card_id, board_id: @id %>
+<% end %
+```
+
+Liveview doesn't fetch to database.  Component queries the database via preload and update
+---
+## Blog Post
+
+http://blog.pthompson.org/liveview-livecomponents-introduction
 
 ---
-| Binding  | Attribute |
-| ------------- | ------------- |
-|Key Events	|phx-keydown, phx-keyup, phx-target|
-|Rate Limiting	|phx-debounce, phx-throttle|
-|Custom DOM Patching	|phx-update|
-|JS Interop	|phx-hook|
----
-## Liveview Use Cases
+## Stateless Component Application
 
-* Inputs, buttons forms
-  - input validation, dynamic forms, autocomplete
-
-* Page and data navigation
+https://github.com/antew/planning_poker
 
 ---
-## Liveview Limitations
 
-* Needs connection reliability
-* Needs low connection latency or can tolerate lag
-* Animations handled elsewhere, CSS transitions
-
----
-## Strengths of Liveview
-
-* Display interactions pushed to client
-  - Chat, monitoring events, sharing interactively
-
-* AI systems where AI is major actor on system
-
----
 ## Example Application
 
 https://github.com/meanderingstream/image_anno
